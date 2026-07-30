@@ -44,16 +44,55 @@ def snapshot(name: str) -> str:
 
 def notify_tg(ok: bool, email: str = "", server: str = "",
               before: str = "", after: str = "",
+              cooldown: str = "", remaining: str = "",
+              start_note: str = "",
               error_msg: str = "", screenshot: str = None):
-    """TG通知使用真实邮箱和服务器ID"""
+    """TG通知使用真实邮箱和服务器ID
+
+    Args:
+        cooldown: 下次可续期时间 (如 "23h 59m")
+        remaining: 服务器剩余时间 (如 "23h 59m")
+        start_note: 开机状态 (如 "✅ 服务器已在运行中，无需开机")
+    """
     token = os.environ.get("TG_BOT_TOKEN")
     chat_id = os.environ.get("TG_CHAT_ID")
     if not token or not chat_id:
         return
 
-    msg = f"🎮Godlike 续期通知\n⏰运行时间: {cn_time()}\n🖥️服务器: {server}\n🔢下次可续期: {after}\n🔢剩余时间: {after}\n📊续期结果: ✅续期+开机成功!\n📊状态: ✅服务器已在运行中" if ok else f"🎮Godlike 续期通知\n⏰运行时间: {cn_time()}\n🖥️服务器: {server}\n📊续期结果: ❌操作失败!\n📊原因: {error_msg}"
-    if email:
-        msg = msg.replace("🖥️服务器:", f"🖥️账号: {email}\n🖥️服务器:")
+    # 兼容旧调用: 如果只传了 after, 拆分成 cooldown 和 start_note
+    if after and not cooldown and not start_note:
+        parts = after.split("\n", 1)
+        cooldown = parts[0]
+        if len(parts) > 1:
+            start_note = parts[1]
+
+    if ok:
+        msg = (
+            f"🎮Godlike 续期通知\n"
+            f"⏰运行时间: {cn_time()}\n"
+        )
+        if email:
+            msg += f"🖥️账号: {email}\n"
+        msg += f"🖥️服务器: {server}\n"
+        if cooldown:
+            msg += f"🔢下次可续期: {cooldown}\n"
+        if remaining and remaining != cooldown:
+            msg += f"⏳剩余时间: {remaining}\n"
+        if start_note:
+            msg += f"📊续期结果: ✅续期成功\n"
+            msg += f"📊开机状态: {start_note}"
+        else:
+            msg += f"📊续期结果: ✅续期成功"
+    else:
+        msg = (
+            f"🎮Godlike 续期通知\n"
+            f"⏰运行时间: {cn_time()}\n"
+        )
+        if email:
+            msg += f"🖥️账号: {email}\n"
+        msg += f"🖥️服务器: {server}\n"
+        msg += f"📊续期结果: ❌操作失败!\n"
+        msg += f"📊原因: {error_msg}"
 
     try:
         # 统一纯文本通知 (不发送截图, 保持简洁格式)
@@ -647,7 +686,9 @@ def process_account(key: str, proxy: str = None) -> bool:
         ok=renew_ok,
         email=user,
         server=short_id,
-        after=f"{cooldown_after}\n{start_note}",
+        cooldown=cooldown_after,
+        remaining=cooldown_after,  # Godlike 的 "下次可续期" 就是剩余时间
+        start_note=start_note,
     )
 
     print(f"[INFO] ✅ {key} 处理完成", flush=True)
