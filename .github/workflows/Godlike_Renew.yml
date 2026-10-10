@@ -4,11 +4,15 @@ on:
     - cron: '0 */3 * * *'
   workflow_dispatch:
 
+concurrency:
+  group: godlike-renew
+  cancel-in-progress: false
+
 jobs:
   add_time_job:
     name: 运行续期脚本
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     permissions:
       actions: write
       contents: write
@@ -21,6 +25,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+      - name: 缓存 Playwright 浏览器
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-chromium
 
       - name: 安装依赖
         run: |
@@ -45,6 +55,7 @@ jobs:
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
           PROXY_SERVER: ${{ env.PROXY_SERVER }}
+        timeout-minutes: 15
         run: python main.py
 
       - name: 上传截图
