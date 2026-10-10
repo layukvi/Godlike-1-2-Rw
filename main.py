@@ -3,7 +3,8 @@
 Godlike 主机自动续期 + 开机脚本
 """
 
-import os, sys, time, traceback, random, json, re, asyncio
+import os, sys, time, traceback, random, json, re, asyncio, threading, builtins
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional, Tuple
@@ -19,6 +20,20 @@ LOGIN_URL = f"{FRONT_BASE}/login"
 OUTPUT_DIR = Path("scripts/Godlike")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 CN_TZ = timezone(timedelta(hours=8))
+
+# ---------- 并发支持 ----------
+# 每个账号一个线程，日志自动加 [GODLIKE_x] 前缀，避免交错后分不清
+_tls = threading.local()
+_orig_print = builtins.print
+def _prefixed_print(*args, **kwargs):
+    tag = getattr(_tls, "tag", "")
+    if tag and args:
+        args = (f"[{tag}]",) + args
+    _orig_print(*args, **kwargs)
+builtins.print = _prefixed_print
+
+# 同时打开的浏览器数量上限（Actions 的 runner 只有 2 核 7G，登录阶段限 2 个并发）
+LOGIN_SEM = threading.Semaphore(int(os.environ.get("LOGIN_CONCURRENCY", "2")))
 
 # ---------- 工具函数 ----------
 def cn_time():
@@ -138,7 +153,6 @@ def login_and_get_token(user: str, pwd: str, proxy: str = None) -> Tuple[Optiona
         try:
             print(f"[DEBUG] 正在打开登录页: {LOGIN_URL}", flush=True)
             page.goto(LOGIN_URL, wait_until="domcontentloaded")
-            page.wait_for_timeout(3000)
             print(f"[DEBUG] 当前 URL: {page.url}", flush=True)
 
             switch = page.locator('button:has-text("Through login/password")')
@@ -154,7 +168,6 @@ def login_and_get_token(user: str, pwd: str, proxy: str = None) -> Tuple[Optiona
                 except:
                     pass
                 return None, None, None
-            page.wait_for_timeout(2000)
 
             try:
                 page.locator('input[placeholder="Username or Email"]').wait_for(state="visible", timeout=15000)
@@ -192,7 +205,10 @@ def login_and_get_token(user: str, pwd: str, proxy: str = None) -> Tuple[Optiona
                     pass
                 return None, None, None
 
-            page.wait_for_timeout(5000)
+            try:
+                page.wait_for_url(lambda u: "/login" not in u, timeout=20000)
+            except Exception:
+                pass
             print(f"[DEBUG] 登录后 URL: {page.url}", flush=True)
 
             # === 详细诊断：捕获登录失败的原因 ===
@@ -284,6 +300,8 @@ def login_and_get_token(user: str, pwd: str, proxy: str = None) -> Tuple[Optiona
                 pass
 
             for _ in range(5):
+                if bearer_token and full_uuid:
+                    break
                 for sel in ['button:has-text("Go to my server")', 'button:has-text("Skip")']:
                     try:
                         el = page.locator(sel)
@@ -610,7 +628,8 @@ def process_account(key: str, proxy: str = None) -> bool:
     print(f"{'='*60}", flush=True)
 
     # 1. 登录
-    bearer_token, full_uuid, short_id = login_and_get_token(user, pwd, proxy)
+    with LOGIN_SEM:
+        bearer_token, full_uuid, short_id = login_and_get_token(user, pwd, proxy)
     if not bearer_token:
         print("[ERROR] 未能获取 Bearer Token", flush=True)
         notify_tg(False, email=user, error_msg="未能获取 Bearer Token")
@@ -694,25 +713,42 @@ def process_account(key: str, proxy: str = None) -> bool:
     print(f"[INFO] ✅ {key} 处理完成", flush=True)
     return renew_ok
 
+def run_one(acc: str, proxy: Optional[str], delay: float) -> bool:
+    _tls.tag = acc
+    time.sleep(delay)
+    try:
+        return process_account(acc, proxy)
+    except Exception as e:
+        print(f"[FATAL] {acc} 崩溃: {e}", flush=True)
+        traceback.print_exc()
+        notify_tg(False, email=acc, error_msg=f"脚本崩溃: {str(e)[:200]}")
+        return False
+
 def main():
     proxy = os.environ.get("PROXY_SERVER", "")
     if proxy:
         print(f"[INFO] 使用代理", flush=True)
 
-    accounts = [f"GODLIKE_{i}" for i in range(1, 6)]
+    # 只处理配置了 secret 的账号
+    accounts = [k for k in (f"GODLIKE_{i}" for i in range(1, 6))
+                if os.environ.get(k, "").strip()]
+    if not accounts:
+        print("[ERROR] 没有配置任何账号", flush=True)
+        sys.exit(1)
+
+    max_workers = min(len(accounts), int(os.environ.get("MAX_WORKERS", "5")))
+    print(f"[INFO] 共 {len(accounts)} 个账号，并发 {max_workers}", flush=True)
+
     all_ok = True
-    for idx, acc in enumerate(accounts):
-        try:
-            ok = process_account(acc, proxy if proxy else None)
-            if not ok:
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        # 每个账号错开几秒启动，避免同一时刻打爆代理/面板
+        futures = {
+            ex.submit(run_one, acc, proxy or None, idx * random.uniform(2, 4)): acc
+            for idx, acc in enumerate(accounts)
+        }
+        for fut in as_completed(futures):
+            if not fut.result():
                 all_ok = False
-        except Exception as e:
-            print(f"[FATAL] {acc} 崩溃: {e}", flush=True)
-            traceback.print_exc()
-            notify_tg(False, email=acc, error_msg=f"脚本崩溃: {str(e)[:200]}")
-            all_ok = False
-        if idx < len(accounts) - 1:
-            time.sleep(random.randint(5, 15))
 
     if all_ok:
         print("\n[INFO] 🎉 所有账号处理成功", flush=True)
