@@ -258,7 +258,22 @@ def login_and_get_token(user: str, pwd: str, proxy: str = None) -> Tuple[Optiona
 
         try:
             print(f"[DEBUG] 正在打开登录页: {LOGIN_URL}", flush=True)
-            page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=45000)
+            goto_ok = False
+            last_err = None
+            for attempt in range(1, 4):
+                try:
+                    page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=45000)
+                    goto_ok = True
+                    break
+                except Exception as e:
+                    last_err = e
+                    print(f"[WARN] 第 {attempt}/3 次打开登录页失败: {e}", flush=True)
+                    if attempt < 3:
+                        time.sleep(5)
+
+            if not goto_ok:
+                raise last_err
+
             page.wait_for_timeout(3000)
             print(f"[DEBUG] 当前 URL: {page.url}", flush=True)
 
@@ -653,6 +668,12 @@ def process_account(key: str, proxy: str = None) -> bool:
 
     # 1. 登录并获取 Token 和 UUID
     bearer_token, full_uuid, short_id, err_reason = login_and_get_token(user, pwd, proxy)
+
+    # 如果因为代理连接失败导致未获取到 token，自动回退直连重试一次
+    if not bearer_token and proxy and any(err in (err_reason or "") for err in ("ERR_SOCKS_CONNECTION_FAILED", "ERR_PROXY_CONNECTION_FAILED", "ERR_TUNNEL_CONNECTION_FAILED", "Timeout")):
+        print("[WARN] 代理连接异常，尝试切换为【无代理直连】重试一次...", flush=True)
+        bearer_token, full_uuid, short_id, err_reason = login_and_get_token(user, pwd, None)
+
     if not bearer_token:
         msg = err_reason or "未能获取 Bearer Token"
         print(f"[ERROR] {msg}", flush=True)
