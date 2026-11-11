@@ -33,6 +33,25 @@ jobs:
           NODE_LINK: ${{ secrets.PROXY_NODE }}
         run: |
           bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
+          sleep 5
+
+      - name: 检查代理连通性
+        run: |
+          if [ -n "$PROXY_SERVER" ]; then
+            echo "正在测试代理连通性: $PROXY_SERVER"
+            if curl -x "$PROXY_SERVER" -s -I -m 15 https://ultra.panel.godlike.host/login > /dev/null; then
+              echo "✅ 代理连接正常"
+            else
+              echo "⚠️ 代理首次测试未响应，等待 5 秒后二次测试..."
+              sleep 5
+              if curl -x "$PROXY_SERVER" -s -I -m 15 https://ultra.panel.godlike.host/login > /dev/null; then
+                echo "✅ 代理二次测试连接正常"
+              else
+                echo "⚠️ 代理无法连接目标网站，自动清空 PROXY_SERVER，改用直连"
+                echo "PROXY_SERVER=" >> $GITHUB_ENV
+              fi
+            fi
+          fi
 
       - name: 运行续期脚本
         env:
