@@ -277,18 +277,30 @@ def login_and_get_token(user: str, pwd: str, proxy: str = None) -> Tuple[Optiona
             page.wait_for_timeout(3000)
             print(f"[DEBUG] 当前 URL: {page.url}", flush=True)
 
+            # 等待并点击登录切换按钮（支持超时自动刷新重试）
             switch = page.locator('button:has-text("Through login/password")')
-            try:
-                switch.wait_for(state="visible", timeout=15000)
-                switch.click()
-                print("[DEBUG] 已点击 'Through login/password' 按钮", flush=True)
-            except Exception as e:
-                print(f"[ERROR] 未找到 'Through login/password' 按钮: {e}", flush=True)
+            for btn_attempt in range(1, 3):
                 try:
-                    page.screenshot(path="login_no_switch_btn.png")
-                except Exception:
-                    pass
-                return None, None, None, "未找到登录切换按钮"
+                    switch.wait_for(state="visible", timeout=25000)
+                    switch.click()
+                    print("[DEBUG] 已点击 'Through login/password' 按钮", flush=True)
+                    break
+                except Exception as e:
+                    print(f"[WARN] 第 {btn_attempt}/2 次等待 'Through login/password' 按钮超时: {e}", flush=True)
+                    if btn_attempt < 2:
+                        print("[DEBUG] 尝试刷新页面重新加载前端资源...", flush=True)
+                        try:
+                            page.reload(wait_until="domcontentloaded", timeout=45000)
+                            page.wait_for_timeout(5000)
+                        except Exception:
+                            pass
+                    else:
+                        print("[ERROR] 最终未找到 'Through login/password' 按钮", flush=True)
+                        try:
+                            page.screenshot(path="login_no_switch_btn.png")
+                        except Exception:
+                            pass
+                        return None, None, None, "未找到登录切换按钮(Timeout)"
 
             page.wait_for_timeout(2000)
 
@@ -302,7 +314,7 @@ def login_and_get_token(user: str, pwd: str, proxy: str = None) -> Tuple[Optiona
                     page.screenshot(path="login_no_input.png")
                 except Exception:
                     pass
-                return None, None, None, "未找到账号密码输入框"
+                return None, None, None, "未找到账号密码输入框(Timeout)"
 
             page.fill('input[placeholder="Username or Email"]', user)
             page.fill('input[placeholder="Password"]', pwd)
@@ -669,9 +681,10 @@ def process_account(key: str, proxy: str = None) -> bool:
     # 1. 登录并获取 Token 和 UUID
     bearer_token, full_uuid, short_id, err_reason = login_and_get_token(user, pwd, proxy)
 
-    # 如果因为代理连接失败导致未获取到 token，自动回退直连重试一次
-    if not bearer_token and proxy and any(err in (err_reason or "") for err in ("ERR_SOCKS_CONNECTION_FAILED", "ERR_PROXY_CONNECTION_FAILED", "ERR_TUNNEL_CONNECTION_FAILED", "Timeout")):
-        print("[WARN] 代理连接异常，尝试切换为【无代理直连】重试一次...", flush=True)
+    # 如果首次登录未能获取 token（无论是代理冷启动超时还是连接异常），等待5秒后切换无代理直连重试一次
+    if not bearer_token and "登录被拒绝" not in (err_reason or ""):
+        print("[WARN] 首次登录未能获取 Token，等待 5 秒后尝试【无代理直连】重试一次...", flush=True)
+        time.sleep(5)
         bearer_token, full_uuid, short_id, err_reason = login_and_get_token(user, pwd, None)
 
     if not bearer_token:
